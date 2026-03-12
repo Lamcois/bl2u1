@@ -11,21 +11,23 @@
 
     <div class="w-full max-w-2xl bg-slate-800 p-8 rounded-xl shadow-2xl border border-slate-700">
         <h1 class="text-3xl font-bold text-center mb-2 text-cyan-400">
-            <i class="fa-solid fa-shuttle-space mr-2"></i> Bambu <i class="fa-solid fa-arrow-right mx-2 text-sm text-gray-500"></i> Snapmaker U1
+            <i class="fa-solid fa-shuttle-space mr-2"></i> Bambu
+            <i class="fa-solid fa-arrow-right mx-2 text-sm text-gray-500"></i>
+            Snapmaker U1
         </h1>
         <p class="text-center text-slate-400 mb-8">
             Convert .3mf projects, keeping color painting while changing the machine.
-            <button id="info-btn" class="ml-1 text-cyan-400 hover:text-cyan-300 transition-colors">
+            <button id="info-btn" class="ml-1 text-cyan-400 hover:text-cyan-300 transition-colors" aria-label="More information">
                 <i class="fa-solid fa-circle-info"></i>
             </button>
         </p>
 
         <!-- Info Modal -->
-        <div id="info-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div id="info-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" role="dialog" aria-modal="true">
             <div class="bg-slate-800 border border-slate-600 rounded-xl p-6 max-w-md mx-4 shadow-2xl">
                 <div class="flex justify-between items-center mb-4">
                     <h3 class="text-lg font-bold text-cyan-400"><i class="fa-solid fa-circle-info mr-2"></i>What does this tool do?</h3>
-                    <button id="close-modal" class="text-slate-400 hover:text-white transition-colors">
+                    <button id="close-modal" class="text-slate-400 hover:text-white transition-colors" aria-label="Close">
                         <i class="fa-solid fa-xmark text-xl"></i>
                     </button>
                 </div>
@@ -39,26 +41,31 @@
             </div>
         </div>
 
+        <!-- Step 1: Upload -->
         <div id="step1" class="transition-all">
             <div class="flex items-center justify-center w-full">
-                <label for="file-upload" id="drop-zone" class="flex flex-col items-center justify-center w-full h-64 border-2 border-slate-600 border-dashed rounded-lg cursor-pointer bg-slate-700 hover:bg-slate-600 hover:border-cyan-500 transition-colors">
+                <label for="file-upload" id="drop-zone"
+                       class="flex flex-col items-center justify-center w-full h-64 border-2 border-slate-600 border-dashed rounded-lg cursor-pointer bg-slate-700 hover:bg-slate-600 hover:border-cyan-500 transition-colors">
                     <div class="flex flex-col items-center justify-center pt-5 pb-6">
                         <i class="fa-solid fa-cloud-arrow-up text-4xl mb-3 text-cyan-400"></i>
                         <p class="mb-2 text-sm text-gray-300"><span class="font-semibold">Click to upload</span> or drag and drop the Bambu file</p>
-                        <p class="text-xs text-gray-500">Only .3mf files (max 200MB)</p>
+                        <p class="text-xs text-gray-500">Only .3mf files (max 200 MB)</p>
                     </div>
                     <input id="file-upload" type="file" class="hidden" accept=".3mf" />
                 </label>
             </div>
         </div>
 
-        <!-- Inline error banner -->
-        <div id="error-banner" class="hidden mt-4 bg-red-900/60 border border-red-500 text-red-200 px-4 py-3 rounded-lg flex items-center gap-3">
-            <i class="fa-solid fa-triangle-exclamation text-red-400"></i>
-            <span id="error-message"></span>
-            <button id="error-dismiss" class="ml-auto text-red-400 hover:text-red-200"><i class="fa-solid fa-xmark"></i></button>
+        <!-- Error banner -->
+        <div id="error-banner" class="hidden mt-4 bg-red-900/60 border border-red-500 text-red-200 px-4 py-3 rounded-lg flex items-center gap-3" role="alert">
+            <i class="fa-solid fa-triangle-exclamation text-red-400 flex-shrink-0"></i>
+            <span id="error-message" class="flex-1"></span>
+            <button id="error-dismiss" class="text-red-400 hover:text-red-200 flex-shrink-0" aria-label="Dismiss">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
         </div>
 
+        <!-- Step 2: Configure + Convert -->
         <div id="step2" class="hidden mt-6">
             <h3 class="text-xl font-semibold mb-4 border-b border-slate-600 pb-2">U1 Filament Configuration</h3>
 
@@ -69,32 +76,36 @@
             </div>
 
             <p class="text-sm text-slate-400 mb-4">
-                <span id="filament-hint">I have detected these filaments. How do you want to map them to the U1?</span>
+                <span id="filament-hint">Review and adjust filament settings for the U1, then convert.</span>
                 <span id="selection-counter" class="hidden ml-2 font-semibold text-cyan-400"></span>
             </p>
 
-            <div id="filament-list" class="space-y-4">
-            </div>
+            <div id="filament-list" class="space-y-4"></div>
 
             <div class="flex gap-3 mt-6">
-                <button id="btn-convert" class="flex-1 bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-3 px-4 rounded transition-colors flex justify-center items-center disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-cyan-600">
-                    <span>Convert and Download</span>
-                    <i class="fa-solid fa-bolt ml-2"></i>
+                <button id="btn-convert"
+                        class="flex-1 bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-3 px-4 rounded transition-colors flex justify-center items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-cyan-600">
+                    <i id="convert-icon" class="fa-solid fa-bolt"></i>
+                    <span id="convert-label">Convert and Download</span>
                 </button>
-                <button id="btn-new" class="bg-slate-600 hover:bg-slate-500 text-white font-bold py-3 px-4 rounded transition-colors flex justify-center items-center">
-                    <i class="fa-solid fa-rotate-right mr-2"></i>
+                <button id="btn-new"
+                        class="bg-slate-600 hover:bg-slate-500 text-white font-bold py-3 px-4 rounded transition-colors flex justify-center items-center gap-2">
+                    <i class="fa-solid fa-rotate-right"></i>
                     <span>New</span>
                 </button>
             </div>
         </div>
 
+        <!-- Analyze loading -->
         <div id="loading" class="hidden mt-6 text-center">
             <i class="fa-solid fa-circle-notch fa-spin text-4xl text-cyan-400"></i>
-            <p class="mt-2 text-slate-400">Processing geometry...</p>
+            <p class="mt-2 text-slate-400">Processing geometry&hellip;</p>
         </div>
     </div>
 
-    <p class="mt-4 text-xs text-slate-500 text-center"><i class="fa-solid fa-clock mr-1"></i>Uploaded files are automatically deleted from the server after 8 hours.</p>
+    <p class="mt-4 text-xs text-slate-500 text-center">
+        <i class="fa-solid fa-clock mr-1"></i>Uploaded files are automatically deleted from the server after 8 hours.
+    </p>
 
     <a href="https://buymeacoffee.com/josuanbn" target="_blank" rel="noopener noreferrer"
        class="mt-6 text-slate-400 hover:text-yellow-400 transition-colors flex items-center gap-2 text-sm">
@@ -103,19 +114,24 @@
     </a>
 
     <script>
-        const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB
+        const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200 MB
         const MAX_FILAMENTS = 4;
-        let currentSessionId = "";
-        let totalFilaments = 0;
-        let needsSelection = false; // true when >4 filaments detected
 
-        const dropZone = document.getElementById('drop-zone');
-        const fileUpload = document.getElementById('file-upload');
-        const errorBanner = document.getElementById('error-banner');
+        let currentSessionId = '';
+        let needsSelection   = false;
+        let isConverting     = false;
+
+        const dropZone     = document.getElementById('drop-zone');
+        const fileUpload   = document.getElementById('file-upload');
+        const errorBanner  = document.getElementById('error-banner');
         const errorMessage = document.getElementById('error-message');
-        const btnConvert = document.getElementById('btn-convert');
+        const btnConvert   = document.getElementById('btn-convert');
+        const convertIcon  = document.getElementById('convert-icon');
+        const convertLabel = document.getElementById('convert-label');
 
-        // --- Error banner ---
+        // ----------------------------------------------------------------
+        // Error banner
+        // ----------------------------------------------------------------
         function showError(msg) {
             errorMessage.textContent = msg;
             errorBanner.classList.remove('hidden');
@@ -125,13 +141,30 @@
         }
         document.getElementById('error-dismiss').addEventListener('click', hideError);
 
-        // --- Drag and drop ---
+        // ----------------------------------------------------------------
+        // Convert button loading state
+        // ----------------------------------------------------------------
+        function setConverting(active) {
+            isConverting = active;
+            btnConvert.disabled = active;
+            if (active) {
+                convertIcon.className   = 'fa-solid fa-circle-notch fa-spin';
+                convertLabel.textContent = 'Converting\u2026';
+            } else {
+                convertIcon.className   = 'fa-solid fa-bolt';
+                convertLabel.textContent = 'Convert and Download';
+                if (needsSelection) updateSelectionState();
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // Drag and drop
+        // ----------------------------------------------------------------
         dropZone.addEventListener('dragover', (e) => {
             e.preventDefault();
             dropZone.classList.add('border-cyan-500', 'bg-slate-600');
         });
-        dropZone.addEventListener('dragleave', (e) => {
-            e.preventDefault();
+        dropZone.addEventListener('dragleave', () => {
             dropZone.classList.remove('border-cyan-500', 'bg-slate-600');
         });
         dropZone.addEventListener('drop', (e) => {
@@ -145,9 +178,12 @@
             if (!file) return;
             hideError();
 
-            // Client-side size check
+            if (!file.name.toLowerCase().endsWith('.3mf')) {
+                showError('Only .3mf files are accepted.');
+                return;
+            }
             if (file.size > MAX_FILE_SIZE) {
-                showError(`File is too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum size is 200MB.`);
+                showError(`File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum is 200 MB.`);
                 return;
             }
 
@@ -158,147 +194,143 @@
             formData.append('file', file);
 
             try {
-                const response = await fetch('/analyze', { method: 'POST', body: formData });
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error);
+                const res  = await fetch('/analyze', { method: 'POST', body: formData });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Upload failed');
 
                 currentSessionId = data.session_id;
+
+                // Ensure filament types are loaded before rendering
+                if (availableFilamentTypes.length === 0) await filamentTypesPromise;
                 renderFilaments(data.filaments);
 
                 document.getElementById('loading').classList.add('hidden');
                 document.getElementById('step1').classList.add('hidden');
                 document.getElementById('step2').classList.remove('hidden');
             } catch (err) {
-                showError(err.message || 'Upload failed');
+                showError(err.message || 'Upload failed. Please try again.');
                 document.getElementById('loading').classList.add('hidden');
                 document.getElementById('step1').classList.remove('opacity-50', 'pointer-events-none');
             }
         }
 
-        // --- Filament types ---
+        // ----------------------------------------------------------------
+        // Filament types (loaded at startup)
+        // ----------------------------------------------------------------
         let availableFilamentTypes = [];
-
-        async function loadFilamentTypes() {
+        const filamentTypesPromise = (async () => {
             try {
-                const response = await fetch('/filament-types');
-                availableFilamentTypes = await response.json();
-            } catch (e) {
-                console.error('Could not load filament types:', e);
+                const res = await fetch('/filament-types');
+                availableFilamentTypes = await res.json();
+            } catch {
                 availableFilamentTypes = [
-                    {type: 'PLA', settings_id: 'Snapmaker PLA SnapSpeed @U1'},
-                    {type: 'PETG-HF', settings_id: 'Snapmaker PETG HF'},
-                    {type: 'ABS', settings_id: 'Generic ABS'},
-                    {type: 'TPU', settings_id: 'Generic TPU'}
+                    { type: 'PLA',  settings_id: 'Snapmaker PLA SnapSpeed @U1' },
+                    { type: 'PETG', settings_id: 'Snapmaker PETG HF' },
+                    { type: 'ABS',  settings_id: 'Generic ABS' },
+                    { type: 'TPU',  settings_id: 'Generic TPU' },
                 ];
             }
-        }
+        })();
 
-        function mapFilamentType(originalType) {
-            if (!originalType || availableFilamentTypes.length === 0) {
-                return availableFilamentTypes[0]?.type || 'PLA';
-            }
-            const upper = originalType.toUpperCase();
+        function mapFilamentType(original) {
+            if (!original || availableFilamentTypes.length === 0) return availableFilamentTypes[0]?.type || 'PLA';
+            const up = original.toUpperCase();
             for (const ft of availableFilamentTypes) {
-                if (upper.includes(ft.type.toUpperCase().replace('-HF', '').replace('-', ''))) {
-                    return ft.type;
-                }
+                if (up.includes(ft.type.toUpperCase().replace(/-HF$/, '').replace(/-/g, ''))) return ft.type;
             }
             return availableFilamentTypes[0]?.type || 'PLA';
         }
 
-        // --- Selection logic ---
+        // ----------------------------------------------------------------
+        // Selection logic (only active when >4 filaments)
+        // ----------------------------------------------------------------
         function updateSelectionState() {
             if (!needsSelection) return;
             const checked = document.querySelectorAll('.filament-check:checked').length;
             const counter = document.getElementById('selection-counter');
             counter.textContent = `${checked}/${MAX_FILAMENTS} selected`;
 
-            if (checked > MAX_FILAMENTS) {
-                counter.classList.remove('text-cyan-400');
-                counter.classList.add('text-red-400');
-            } else {
-                counter.classList.remove('text-red-400');
-                counter.classList.add('text-cyan-400');
-            }
-
-            // Enable convert only when 1-4 are selected
-            btnConvert.disabled = checked === 0 || checked > MAX_FILAMENTS;
+            const tooMany = checked > MAX_FILAMENTS;
+            counter.classList.toggle('text-cyan-400', !tooMany);
+            counter.classList.toggle('text-red-400',  tooMany);
+            btnConvert.disabled = checked === 0 || tooMany || isConverting;
         }
 
-        // --- Render filaments ---
+        // ----------------------------------------------------------------
+        // Render filament rows
+        // ----------------------------------------------------------------
         function renderFilaments(filaments) {
             const container = document.getElementById('filament-list');
-            container.innerHTML = "";
-            totalFilaments = filaments.length;
-            needsSelection = totalFilaments > MAX_FILAMENTS;
+            container.innerHTML = '';
+            needsSelection = filaments.length > MAX_FILAMENTS;
 
             const warning = document.getElementById('selection-warning');
             const counter = document.getElementById('selection-counter');
+            const hint    = document.getElementById('filament-hint');
 
             if (needsSelection) {
                 document.getElementById('selection-warning-text').textContent =
-                    `This file has ${totalFilaments} filaments. Select up to ${MAX_FILAMENTS} for the U1.`;
+                    `This file has ${filaments.length} filaments. Select up to ${MAX_FILAMENTS} for the U1.`;
                 warning.classList.remove('hidden');
                 counter.classList.remove('hidden');
-                document.getElementById('filament-hint').textContent = 'Check the filaments you want to keep, then configure their U1 mapping.';
+                hint.textContent = 'Check the filaments you want to keep, then configure their U1 mapping.';
                 btnConvert.disabled = true;
             } else {
                 warning.classList.add('hidden');
                 counter.classList.add('hidden');
-                document.getElementById('filament-hint').textContent = 'I have detected these filaments. How do you want to map them to the U1?';
+                hint.textContent = 'Review and adjust filament settings for the U1, then convert.';
                 btnConvert.disabled = false;
             }
 
             filaments.forEach((fil, index) => {
                 const mappedType = mapFilamentType(fil.type);
-                let optionsHtml = '';
-                for (const ft of availableFilamentTypes) {
-                    const selected = ft.type === mappedType ? 'selected' : '';
-                    optionsHtml += `<option value="${ft.type}" ${selected}>${ft.type}</option>`;
-                }
+                const options = availableFilamentTypes.map(ft =>
+                    `<option value="${ft.type}"${ft.type === mappedType ? ' selected' : ''}>${ft.type}</option>`
+                ).join('');
 
                 const checkboxHtml = needsSelection
-                    ? `<input type="checkbox" class="filament-check w-5 h-5 rounded border-slate-500 bg-slate-600 text-cyan-500 focus:ring-cyan-500 cursor-pointer" data-fil-id="${fil.id}">`
+                    ? `<input type="checkbox" class="filament-check w-5 h-5 rounded border-slate-500 bg-slate-600 text-cyan-500 focus:ring-cyan-500 cursor-pointer flex-shrink-0" data-fil-id="${fil.id}" aria-label="Select filament ${index + 1}">`
                     : '';
 
-                const html = `
-                <div class="bg-slate-700 p-4 rounded flex items-center justify-between gap-3" data-id="${fil.id}">
+                const row = document.createElement('div');
+                row.className = 'bg-slate-700 p-4 rounded flex items-center justify-between gap-3';
+                row.dataset.id = fil.id;
+                row.innerHTML = `
                     ${checkboxHtml}
-                    <div class="flex items-center gap-3 min-w-0">
-                        <div class="w-8 h-8 rounded-full border border-gray-500 shadow flex-shrink-0" style="background-color: ${fil.color}"></div>
+                    <div class="flex items-center gap-3 min-w-0 flex-1">
+                        <div class="w-8 h-8 rounded-full border border-gray-500 shadow flex-shrink-0"
+                             style="background-color: ${fil.color}"></div>
                         <div class="min-w-0">
                             <p class="font-bold text-white">Filament ${index + 1}</p>
                             <p class="text-xs text-gray-400">Original: ${fil.type || 'Unknown'}</p>
                         </div>
                     </div>
-
-                    <div class="flex items-center gap-2 flex-shrink-0">
-                        <i class="fa-solid fa-arrow-right text-gray-500"></i>
-                    </div>
-
+                    <i class="fa-solid fa-arrow-right text-gray-500 flex-shrink-0"></i>
                     <div class="flex gap-2 flex-shrink-0">
-                        <input type="color" class="h-10 w-14 bg-slate-600 border border-slate-500 rounded cursor-pointer"
-                               value="${fil.color}" id="col-${fil.id}">
-                        <select class="bg-slate-600 text-white text-sm rounded border border-slate-500 p-2" id="typ-${fil.id}">
-                            ${optionsHtml}
+                        <input type="color"
+                               class="h-10 w-14 bg-slate-600 border border-slate-500 rounded cursor-pointer"
+                               value="${fil.color}" id="col-${fil.id}"
+                               aria-label="Color for filament ${index + 1}">
+                        <select class="bg-slate-600 text-white text-sm rounded border border-slate-500 p-2"
+                                id="typ-${fil.id}"
+                                aria-label="Type for filament ${index + 1}">
+                            ${options}
                         </select>
-                    </div>
-                </div>`;
-                container.innerHTML += html;
+                    </div>`;
+                container.appendChild(row);
             });
 
-            // Attach checkbox listeners
             if (needsSelection) {
-                container.querySelectorAll('.filament-check').forEach(cb => {
-                    cb.addEventListener('change', updateSelectionState);
-                });
+                container.querySelectorAll('.filament-check').forEach(cb =>
+                    cb.addEventListener('change', updateSelectionState)
+                );
                 updateSelectionState();
             }
         }
 
-        loadFilamentTypes();
-
-        // --- New file button ---
+        // ----------------------------------------------------------------
+        // New file button
+        // ----------------------------------------------------------------
         document.getElementById('btn-new').addEventListener('click', () => {
             document.getElementById('step2').classList.add('hidden');
             document.getElementById('step1').classList.remove('hidden', 'opacity-50', 'pointer-events-none');
@@ -307,57 +339,72 @@
             document.getElementById('selection-warning').classList.add('hidden');
             document.getElementById('selection-counter').classList.add('hidden');
             hideError();
+            setConverting(false);
             currentSessionId = '';
-            needsSelection = false;
+            needsSelection   = false;
+            btnConvert.disabled = false;
         });
 
-        // --- Info modal ---
+        // ----------------------------------------------------------------
+        // Info modal
+        // ----------------------------------------------------------------
         const infoModal = document.getElementById('info-modal');
-        document.getElementById('info-btn').addEventListener('click', () => infoModal.classList.remove('hidden'));
+        document.getElementById('info-btn').addEventListener('click',    () => infoModal.classList.remove('hidden'));
         document.getElementById('close-modal').addEventListener('click', () => infoModal.classList.add('hidden'));
         infoModal.addEventListener('click', (e) => { if (e.target === infoModal) infoModal.classList.add('hidden'); });
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') infoModal.classList.add('hidden'); });
 
-        // --- Convert ---
+        // ----------------------------------------------------------------
+        // Convert
+        // ----------------------------------------------------------------
         btnConvert.addEventListener('click', async () => {
+            if (isConverting) return;
             hideError();
-            const rows = document.querySelectorAll('#filament-list > div');
-            let colors = {};
 
+            const colors = {};
             if (needsSelection) {
-                // Only include checked filaments
                 document.querySelectorAll('.filament-check:checked').forEach(cb => {
                     const id = cb.dataset.filId;
                     colors[id] = {
                         color: document.getElementById(`col-${id}`).value,
-                        type: document.getElementById(`typ-${id}`).value
+                        type:  document.getElementById(`typ-${id}`).value,
                     };
                 });
             } else {
-                // Include all filaments (<=4 case)
-                rows.forEach(div => {
-                    const id = div.getAttribute('data-id');
+                document.querySelectorAll('#filament-list > div').forEach(div => {
+                    const id = div.dataset.id;
                     colors[id] = {
                         color: document.getElementById(`col-${id}`).value,
-                        type: document.getElementById(`typ-${id}`).value
+                        type:  document.getElementById(`typ-${id}`).value,
                     };
                 });
             }
 
+            if (Object.keys(colors).length === 0) {
+                showError('Please select at least one filament.');
+                return;
+            }
+
+            setConverting(true);
+
             try {
-                const res = await fetch('/convert', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ session_id: currentSessionId, colors: colors })
+                const res  = await fetch('/convert', {
+                    method:  'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body:    JSON.stringify({ session_id: currentSessionId, colors }),
                 });
                 const data = await res.json();
 
-                if (data.download_url) {
-                    window.location.href = data.download_url;
-                } else {
-                    showError(data.error || 'Conversion failed');
+                if (!res.ok || !data.download_url) {
+                    throw new Error(data.error || 'Conversion failed');
                 }
-            } catch (e) {
-                showError('Connection error. Please try again.');
+
+                // Trigger download, then restore button so user can convert again
+                window.location.href = data.download_url;
+                setConverting(false);
+            } catch (err) {
+                showError(err.message || 'Connection error. Please try again.');
+                setConverting(false);
             }
         });
     </script>

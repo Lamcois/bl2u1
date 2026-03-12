@@ -1,394 +1,383 @@
 import os
 import zipfile
-import shutil
 import re
 import json
 import uuid
 import time
+import logging
+import posixpath
 import xml.etree.ElementTree as ET
+from threading import Timer
 from flask import Flask, render_template, request, send_file, jsonify
 from werkzeug.exceptions import RequestEntityTooLarge
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 app = Flask(__name__)
 
-# CONFIGURATION
-UPLOAD_FOLDER = 'uploads'
-TEMPLATE_FILE = 'u1_template.3mf'  # Your empty U1 .3mf file
-FILAMENT_PROFILES_FILE = 'filament_types.3mf'  # Reference file with available filament profiles
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200MB (must match Apache LimitRequestBody)
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+UPLOAD_FOLDER            = 'uploads'
+FILAMENT_PROFILES_FILE   = 'filament_types.3mf'
+TARGET_FILAMENTS         = 4     # U1 hardware supports 4 extruders
+MAX_FILE_AGE_HOURS       = 8
+DEFAULT_FILAMENT_PROFILE = 'Snapmaker PLA SnapSpeed @U1'
 
-# Ensure folders exist
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER']      = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200 MB
 
-# Cleanup settings
-MAX_FILE_AGE_HOURS = 8
+try:
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+except OSError as e:
+    raise RuntimeError(f"Cannot create upload directory: {e}") from e
 
-def cleanup_old_files():
-    """Remove files older than MAX_FILE_AGE_HOURS from uploads folder."""
-    now = time.time()
-    max_age_seconds = MAX_FILE_AGE_HOURS * 3600
+_SESSION_RE = re.compile(r'^[0-9a-f]{32}$')
+_COLOR_RE   = re.compile(r'^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$')
 
-    try:
-        for filename in os.listdir(UPLOAD_FOLDER):
-            filepath = os.path.join(UPLOAD_FOLDER, filename)
-            if os.path.isfile(filepath):
-                file_age = now - os.path.getmtime(filepath)
-                if file_age > max_age_seconds:
-                    os.remove(filepath)
-    except Exception as e:
-        print(f"Cleanup error: {e}")
-
-# Load available filament profiles from filament_types.3mf
-AVAILABLE_FILAMENTS = []
+# ---------------------------------------------------------------------------
+# Filament profiles (loaded once at startup)
+# ---------------------------------------------------------------------------
+AVAILABLE_FILAMENTS: list[dict] = []
 try:
     with zipfile.ZipFile(FILAMENT_PROFILES_FILE, 'r') as z:
         settings = json.loads(z.read('Metadata/project_settings.config').decode('utf-8'))
-        types = settings.get('filament_type', [])
-        ids = settings.get('filament_settings_id', [])
-        for t, sid in zip(types, ids):
-            AVAILABLE_FILAMENTS.append({
-                'type': t,
-                'settings_id': sid
-            })
-    print(f"Loaded {len(AVAILABLE_FILAMENTS)} filament profiles from {FILAMENT_PROFILES_FILE}")
+        for t, sid in zip(settings.get('filament_type', []), settings.get('filament_settings_id', [])):
+            AVAILABLE_FILAMENTS.append({'type': t, 'settings_id': sid})
+    logger.info("Loaded %d filament profiles", len(AVAILABLE_FILAMENTS))
 except Exception as e:
-    print(f"Warning: Could not load filament profiles: {e}")
-    # Fallback defaults
+    logger.warning("Could not load filament profiles (%s) -- using fallback defaults", e)
     AVAILABLE_FILAMENTS = [
-        {'type': 'PLA', 'settings_id': 'Snapmaker PLA SnapSpeed @U1'},
+        {'type': 'PLA',  'settings_id': DEFAULT_FILAMENT_PROFILE},
         {'type': 'PETG', 'settings_id': 'Snapmaker PETG HF'},
-        {'type': 'ABS', 'settings_id': 'Generic ABS'},
-        {'type': 'TPU', 'settings_id': 'Generic TPU'},
+        {'type': 'ABS',  'settings_id': 'Generic ABS'},
+        {'type': 'TPU',  'settings_id': 'Generic TPU'},
     ]
 
-def normalize_color(color):
-    """
-    Normalize color to #RRGGBB format for HTML color input compatibility.
-    Handles colors with or without #, and with alpha channel (8 chars).
-    """
-    if not color:
-        return "#000000"
-    # Remove # if present
-    color = color.lstrip('#')
-    # If 8 characters (with alpha), take only first 6 (RGB)
-    if len(color) == 8:
-        color = color[:6]
-    # Ensure 6 characters
-    if len(color) != 6:
-        return "#000000"
-    return f"#{color.upper()}"
+_VALID_TYPES = {f['type'] for f in AVAILABLE_FILAMENTS}
 
-def parse_bambu_filaments(filepath):
-    """
-    Opens the 3MF and returns a list of current filaments/colors.
-    First tries slice_info.config, then falls back to project_settings.config.
-    """
-    filaments = []
+# ---------------------------------------------------------------------------
+# Background cleanup (every hour instead of on every request)
+# ---------------------------------------------------------------------------
+def cleanup_old_files() -> None:
+    now    = time.time()
+    cutoff = MAX_FILE_AGE_HOURS * 3600
+    try:
+        for name in os.listdir(UPLOAD_FOLDER):
+            path = os.path.join(UPLOAD_FOLDER, name)
+            if os.path.isfile(path) and (now - os.path.getmtime(path)) > cutoff:
+                os.remove(path)
+                logger.debug("Deleted old upload: %s", name)
+    except Exception as e:
+        logger.error("Cleanup error: %s", e)
+
+
+def _schedule_cleanup(interval: int = 3600) -> None:
+    cleanup_old_files()
+    Timer(interval, _schedule_cleanup, [interval]).start()
+
+
+_schedule_cleanup()
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def normalize_color(color: str) -> str:
+    if not color:
+        return '#000000'
+    c = color.lstrip('#')
+    if len(c) == 8:
+        c = c[:6]
+    if len(c) != 6:
+        return '#000000'
+    try:
+        int(c, 16)
+    except ValueError:
+        return '#000000'
+    return f'#{c.upper()}'
+
+
+def parse_bambu_filaments(filepath: str) -> list[dict]:
+    filaments: list[dict] = []
     try:
         with zipfile.ZipFile(filepath, 'r') as z:
-            # First try slice_info.config
-            if "Metadata/slice_info.config" in z.namelist():
-                with z.open("Metadata/slice_info.config") as f:
-                    xml_content = f.read().decode('utf-8')
-                    root = ET.fromstring(xml_content)
-                    for fil in root.findall(".//filament"):
-                        f_id = fil.get('id')
-                        f_color = normalize_color(fil.get('color'))
-                        f_type = fil.get('type') or 'PLA'
-                        filaments.append({
-                            'id': f_id,
-                            'color': f_color,
-                            'type': f_type
-                        })
-
-            # If no filaments found in slice_info, try project_settings.config
-            if not filaments and "Metadata/project_settings.config" in z.namelist():
-                with z.open("Metadata/project_settings.config") as f:
-                    settings = json.loads(f.read().decode('utf-8'))
-                    colors = settings.get('filament_colour', [])
-                    types = settings.get('filament_type', [])
-
-                    for i, color in enumerate(colors):
-                        f_type = types[i] if i < len(types) else 'PLA'
-                        filaments.append({
-                            'id': str(i + 1),  # 1-based IDs
-                            'color': normalize_color(color),
-                            'type': f_type
-                        })
-
+            names = z.namelist()
+            if 'Metadata/slice_info.config' in names:
+                root = ET.fromstring(z.read('Metadata/slice_info.config').decode('utf-8'))
+                for fil in root.findall('.//filament'):
+                    filaments.append({
+                        'id':    fil.get('id'),
+                        'color': normalize_color(fil.get('color', '')),
+                        'type':  fil.get('type') or 'PLA',
+                    })
+            if not filaments and 'Metadata/project_settings.config' in names:
+                cfg    = json.loads(z.read('Metadata/project_settings.config').decode('utf-8'))
+                colors = cfg.get('filament_colour', [])
+                types  = cfg.get('filament_type', [])
+                for i, color in enumerate(colors):
+                    filaments.append({
+                        'id':    str(i + 1),
+                        'color': normalize_color(color),
+                        'type':  types[i] if i < len(types) else 'PLA',
+                    })
     except Exception as e:
-        print(f"Error parsing filaments: {e}")
+        logger.error("Error parsing filaments from %s: %s", filepath, e)
     return filaments
 
+
+def _safe_path(filename: str) -> str | None:
+    safe_dir  = os.path.realpath(UPLOAD_FOLDER)
+    candidate = os.path.realpath(os.path.join(safe_dir, filename))
+    return candidate if candidate.startswith(safe_dir + os.sep) else None
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 @app.errorhandler(RequestEntityTooLarge)
-def handle_file_too_large(e):
-    return jsonify({'error': 'File is too large. Maximum size is 200MB.'}), 413
+def handle_file_too_large(_e):
+    return jsonify({'error': 'File is too large. Maximum size is 200 MB.'}), 413
+
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
+
 @app.route('/filament-types')
 def get_filament_types():
-    """Return available filament types for the frontend dropdown."""
     return jsonify(AVAILABLE_FILAMENTS)
+
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
-    # Cleanup old files on each upload
-    cleanup_old_files()
-
     if 'file' not in request.files:
         return jsonify({'error': 'No file uploaded'}), 400
 
     file = request.files['file']
-    if file.filename == '':
+    if not file.filename:
         return jsonify({'error': 'No file selected'}), 400
+    if not file.filename.lower().endswith('.3mf'):
+        return jsonify({'error': 'Only .3mf files are accepted'}), 400
 
-    # Generate unique session ID
-    session_id = str(uuid.uuid4())[:8]
-    input_filename = f"{session_id}_input.3mf"
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], input_filename)
+    session_id     = uuid.uuid4().hex          # 32 hex chars, full 128-bit entropy
+    input_filename = f'{session_id}_input.3mf'
+    filepath       = _safe_path(input_filename)
+    if filepath is None:
+        return jsonify({'error': 'Internal path error'}), 500
+
     file.save(filepath)
 
-    # Analyze colors
-    filaments = parse_bambu_filaments(filepath)
+    # Validate ZIP magic bytes
+    with open(filepath, 'rb') as f:
+        magic = f.read(4)
+    if magic != b'PK\x03\x04':
+        os.remove(filepath)
+        return jsonify({'error': 'Uploaded file is not a valid 3MF/ZIP archive'}), 400
 
-    return jsonify({
-        'session_id': session_id,
-        'filaments': filaments
-    })
+    filaments = parse_bambu_filaments(filepath)
+    return jsonify({'session_id': session_id, 'filaments': filaments})
+
 
 @app.route('/convert', methods=['POST'])
 def convert():
-    data = request.json
-    session_id = data.get('session_id')
-    if not session_id:
-        return jsonify({'error': 'No session ID provided'}), 400
+    data = request.get_json(silent=True)
+    if not data or not isinstance(data, dict):
+        return jsonify({'error': 'Invalid JSON body'}), 400
 
-    input_filename = f"{session_id}_input.3mf"
-    output_filename = f"{session_id}_U1_Ready.3mf"
-    input_path = os.path.join(app.config['UPLOAD_FOLDER'], input_filename)
-    output_path = os.path.join(app.config['UPLOAD_FOLDER'], output_filename)
+    session_id = data.get('session_id', '')
+    if not _SESSION_RE.fullmatch(session_id):
+        return jsonify({'error': 'Invalid session ID'}), 400
+
+    input_path  = _safe_path(f'{session_id}_input.3mf')
+    output_path = _safe_path(f'{session_id}_U1_Ready.3mf')
+    if input_path is None or output_path is None:
+        return jsonify({'error': 'Internal path error'}), 500
 
     if not os.path.exists(input_path):
-        return jsonify({'error': 'Session expired or file not found'}), 404
+        return jsonify({'error': 'Session expired or file not found. Please re-upload.'}), 404
 
-    user_colors = data.get('colors', {})  # Dict {original_filament_id: {color: #hex, type: PLA}}
+    user_colors = data.get('colors', {})
+    if not isinstance(user_colors, dict):
+        return jsonify({'error': '"colors" must be a JSON object'}), 400
 
-    # 1. Copy the original file to start
-    shutil.copy(input_path, output_path)
+    # Parse filaments once and reuse throughout
+    original_filaments = parse_bambu_filaments(input_path)
+    if not original_filaments:
+        return jsonify({'error': 'Could not parse filaments from the uploaded file'}), 400
 
-    # 2. Read original file's project settings first to determine template
+    valid_ids = {f['id'] for f in original_filaments}
+
+    for fid, conf in user_colors.items():
+        if fid not in valid_ids:
+            return jsonify({'error': f'Unknown filament ID: {fid}'}), 400
+        if not isinstance(conf, dict):
+            return jsonify({'error': 'Each filament entry must be a JSON object'}), 400
+        color = conf.get('color', '')
+        ftype = conf.get('type', '')
+        if not _COLOR_RE.match(color):
+            return jsonify({'error': f'Invalid color: {color}'}), 400
+        if ftype not in _VALID_TYPES:
+            return jsonify({'error': f'Invalid filament type: {ftype}'}), 400
+
+    # Pick template based on support settings in the original file
     try:
-        with zipfile.ZipFile(input_path, 'r') as z_orig:
-            original_project_settings = json.loads(z_orig.read('Metadata/project_settings.config').decode('utf-8'))
+        with zipfile.ZipFile(input_path, 'r') as z:
+            orig_settings = json.loads(z.read('Metadata/project_settings.config').decode('utf-8'))
     except Exception as e:
-        return jsonify({'error': f'Could not read original project settings: {e}'}), 500
+        logger.error("Could not read project settings [%s]: %s", session_id, e)
+        return jsonify({'error': 'Could not read project settings from the uploaded file'}), 500
 
-    # Determine which template to use based on support settings
-    different_settings = original_project_settings.get('different_settings_to_system', [])
-    has_support = any('enable_support' in s for s in different_settings if s)
-    if has_support:
-        template_file = 'u1_template_supports.3mf'
-    else:
-        template_file = 'u1_template.3mf'
+    diff        = orig_settings.get('different_settings_to_system', [])
+    has_support = any(isinstance(s, str) and 'enable_support' in s for s in diff)
+    template    = 'u1_template_supports.3mf' if has_support else 'u1_template.3mf'
 
-    # 3. Read U1 Template's project settings
     try:
-        with zipfile.ZipFile(template_file, 'r') as z_templ:
-            u1_project_settings_json = json.loads(z_templ.read('Metadata/project_settings.config').decode('utf-8'))
+        with zipfile.ZipFile(template, 'r') as z:
+            u1_settings = json.loads(z.read('Metadata/project_settings.config').decode('utf-8'))
     except Exception as e:
-        return jsonify({'error': f'U1 Template ({template_file}) not found on server: {e}'}), 500
+        logger.error("Could not read template %s: %s", template, e)
+        return jsonify({'error': 'Server template missing -- please contact the administrator'}), 500
 
-    # 4. Process the 3MF archive
-    temp_zip = output_path + ".temp"
-
+    # ------------------------------------------------------------------
+    # Build the modified archive: read input_path -> write output_path
+    # (no intermediate shutil.copy needed)
+    # ------------------------------------------------------------------
     try:
-        with zipfile.ZipFile(output_path, 'r') as zin:
-            with zipfile.ZipFile(temp_zip, 'w', compression=zipfile.ZIP_DEFLATED) as zout:
-                # Get the original slice_info.config to modify it
-                slice_info_content = zin.read('Metadata/slice_info.config')
+        with zipfile.ZipFile(input_path, 'r') as zin, \
+             zipfile.ZipFile(output_path, 'w', compression=zipfile.ZIP_DEFLATED) as zout:
 
-                # --- Start Slice Info Modification ---
-                # Change machine model
-                xml_str = slice_info_content.decode('utf-8')
-                xml_str = re.sub(r'key="printer_model_id" value="[^"]*"', r'key="printer_model_id" value="Snapmaker U1"', xml_str)
-                root = ET.fromstring(xml_str)
+            # ---- slice_info.config ----------------------------------------
+            xml_str = zin.read('Metadata/slice_info.config').decode('utf-8')
+            xml_str = re.sub(
+                r'key="printer_model_id" value="[^"]*"',
+                'key="printer_model_id" value="Snapmaker U1"',
+                xml_str,
+            )
+            root = ET.fromstring(xml_str)
 
-                # Find the parent of the filament nodes (usually a 'plate' or the root)
-                filaments_parent = root.find('.//plate')
-                if filaments_parent is None:
-                    filaments_parent = root
+            filaments_parent = root.find('.//plate') or root
 
-                all_fil_nodes = filaments_parent.findall('.//filament')
+            # Use direct children only so Element.remove() targets the right parent
+            existing_nodes = filaments_parent.findall('filament')
 
-                # Get original filaments in order to map them
-                original_filaments = parse_bambu_filaments(input_path)
+            id_mapping: dict[str, str] = {}
+            new_id_counter = 1
 
-                # Keep track of which original filaments are being used
-                used_original_ids = user_colors.keys()
-
-                # Remove unused filament nodes from the XML
-                for fil_node in all_fil_nodes:
-                    if fil_node.get('id') not in used_original_ids:
-                        filaments_parent.remove(fil_node)
-
-                # Build the ID mapping: old_id -> new_id
-                # This is CRITICAL for updating model_settings.config
-                id_mapping = {}
-                new_id_counter = 1  # U1/Orca uses 1-based IDs for extruders
-
-                # We iterate through the original list to preserve order
-                for original_fil in original_filaments:
-                    original_id = original_fil['id']
-                    if original_id in user_colors:
-                        # Find the corresponding node in the XML
-                        node_to_update = filaments_parent.find(f".//filament[@id='{original_id}']")
-                        if node_to_update is not None:
-                            new_conf = user_colors[original_id]
-
-                            # Store the mapping before changing
-                            id_mapping[original_id] = str(new_id_counter)
-
-                            # Re-map ID to be sequential (1-based)
-                            node_to_update.set('id', str(new_id_counter))
-
-                            # Update color and type
-                            node_to_update.set('color', new_conf['color'])
-                            node_to_update.set('type', new_conf['type'])
-
-                            new_id_counter += 1
-
-                # Add dummy filaments to reach 4 (white PLA)
-                TARGET_FILAMENTS = 4
-                while new_id_counter <= TARGET_FILAMENTS:
-                    dummy_fil = ET.SubElement(filaments_parent, 'filament')
-                    dummy_fil.set('id', str(new_id_counter))
-                    dummy_fil.set('type', 'PLA')
-                    dummy_fil.set('color', '#FFFFFFFF')
-                    dummy_fil.set('used_m', '0')
-                    dummy_fil.set('used_g', '0')
+            for node in list(existing_nodes):
+                old_id = node.get('id')
+                if old_id not in user_colors:
+                    filaments_parent.remove(node)
+                else:
+                    conf = user_colors[old_id]
+                    id_mapping[old_id] = str(new_id_counter)
+                    node.set('id',    str(new_id_counter))
+                    node.set('color', conf['color'])
+                    node.set('type',  conf['type'])
                     new_id_counter += 1
 
-                modified_slice_info = ET.tostring(root, encoding='utf-8', xml_declaration=True)
-                # --- End Slice Info Modification ---
+            # Pad to TARGET_FILAMENTS with dummy white-PLA entries
+            while new_id_counter <= TARGET_FILAMENTS:
+                dummy = ET.SubElement(filaments_parent, 'filament')
+                dummy.set('id',     str(new_id_counter))
+                dummy.set('type',   'PLA')
+                dummy.set('color',  '#FFFFFFFF')
+                dummy.set('used_m', '0')
+                dummy.set('used_g', '0')
+                new_id_counter += 1
 
-                # --- Start Model Settings Modification ---
-                # We need to update extruder references in model_settings.config
-                model_settings_content = zin.read('Metadata/model_settings.config')
-                model_root = ET.fromstring(model_settings_content.decode('utf-8'))
+            modified_slice_info = ET.tostring(root, encoding='utf-8', xml_declaration=True)
 
-                # Find all extruder metadata tags and update them
-                for metadata in model_root.findall('.//metadata[@key="extruder"]'):
-                    old_extruder = metadata.get('value')
-                    if old_extruder in id_mapping:
-                        metadata.set('value', id_mapping[old_extruder])
+            # ---- model_settings.config ------------------------------------
+            model_root = ET.fromstring(
+                zin.read('Metadata/model_settings.config').decode('utf-8')
+            )
+            for meta in model_root.findall('.//metadata[@key="extruder"]'):
+                old_ext = meta.get('value')
+                if old_ext in id_mapping:
+                    meta.set('value', id_mapping[old_ext])
 
-                modified_model_settings = ET.tostring(model_root, encoding='utf-8', xml_declaration=True)
-                # --- End Model Settings Modification ---
+            modified_model_settings = ET.tostring(
+                model_root, encoding='utf-8', xml_declaration=True
+            )
 
-                # --- Start Project Settings Modification ---
-                # Combine U1 printer settings with user-selected filament colors
-                # Start with U1 template settings (for printer configuration)
-                combined_project_settings = u1_project_settings_json.copy()
+            # ---- project_settings.config ----------------------------------
+            combined   = u1_settings.copy()
+            new_colors: list[str] = []
+            new_types:  list[str] = []
 
-                # Get the number of filaments from the original file
-                original_filaments = parse_bambu_filaments(input_path)
-                num_filaments = len(original_filaments)
+            for fil in original_filaments:
+                fid = fil['id']
+                if fid not in user_colors:
+                    continue
+                color = user_colors[fid]['color']
+                ftype = user_colors[fid]['type']
+                color = (color + 'FF') if len(color) == 7 else color  # ensure RGBA
+                new_colors.append(color.upper())
+                new_types.append(ftype)
 
-                # Build the new filament colors list based on user selections
-                # user_colors is keyed by original filament ID
-                new_filament_colors = []
-                new_filament_types = []
+            while len(new_colors) < TARGET_FILAMENTS:
+                new_colors.append('#FFFFFFFF')
+                new_types.append('PLA')
 
-                # Iterate through original filaments in order, only include selected ones
-                for orig_fil in original_filaments:
-                    orig_id = orig_fil['id']
-                    if orig_id not in user_colors:
-                        continue  # Skip filaments the user didn't select
-                    color = user_colors[orig_id]['color']
-                    fil_type = user_colors[orig_id]['type']
+            combined['filament_colour'] = new_colors
+            combined['filament_type']   = new_types
 
-                    # Ensure color format is correct (with alpha for compatibility)
-                    if len(color) == 7:  # #RRGGBB
-                        color = color + 'FF'  # Add alpha
-                    new_filament_colors.append(color.upper())
-                    new_filament_types.append(fil_type)
+            profile_map     = {f['type']: f['settings_id'] for f in AVAILABLE_FILAMENTS}
+            default_profile = AVAILABLE_FILAMENTS[0]['settings_id'] if AVAILABLE_FILAMENTS else DEFAULT_FILAMENT_PROFILE
+            combined['filament_settings_id'] = [
+                profile_map.get(t, default_profile) for t in new_types
+            ]
 
-                # Always ensure 4 filaments (U1 template requirement)
-                # Fill missing slots with white PLA
-                TARGET_FILAMENTS = 4
-                DEFAULT_COLOR = '#FFFFFFFF'
-                DEFAULT_TYPE = 'PLA'
-
-                while len(new_filament_colors) < TARGET_FILAMENTS:
-                    new_filament_colors.append(DEFAULT_COLOR)
-                    new_filament_types.append(DEFAULT_TYPE)
-
-                # Update filament colors in combined settings
-                combined_project_settings['filament_colour'] = new_filament_colors
-
-                # Update filament types
-                combined_project_settings['filament_type'] = new_filament_types
-
-                # Map filament types to Snapmaker U1 filament profiles
-                # Using profiles loaded from filament_types.3mf
-                filament_profile_map = {f['type']: f['settings_id'] for f in AVAILABLE_FILAMENTS}
-                default_profile = AVAILABLE_FILAMENTS[0]['settings_id'] if AVAILABLE_FILAMENTS else 'Snapmaker PLA SnapSpeed @U1'
-
-                new_filament_settings_ids = []
-                for fil_type in new_filament_types:
-                    profile = filament_profile_map.get(fil_type, default_profile)
-                    new_filament_settings_ids.append(profile)
-                combined_project_settings['filament_settings_id'] = new_filament_settings_ids
-
-                # Adjust other filament arrays to always have 4 filaments
-                for key in combined_project_settings:
-                    if key.startswith('filament_') and isinstance(combined_project_settings[key], list):
-                        current_len = len(combined_project_settings[key])
-                        if current_len > 0 and current_len != TARGET_FILAMENTS:
-                            if TARGET_FILAMENTS > current_len:
-                                # Extend by repeating the last value
-                                last_val = combined_project_settings[key][-1]
-                                combined_project_settings[key].extend([last_val] * (TARGET_FILAMENTS - current_len))
-                            else:
-                                # Truncate to 4
-                                combined_project_settings[key] = combined_project_settings[key][:TARGET_FILAMENTS]
-
-                # Convert to JSON string
-                combined_project_settings_str = json.dumps(combined_project_settings, indent=4, ensure_ascii=False)
-                # --- End Project Settings Modification ---
-
-                # Write the modified archive
-                for item in zin.infolist():
-                    # Replace project settings, slice info, and model settings
-                    if item.filename == 'Metadata/project_settings.config':
-                        zout.writestr(item, combined_project_settings_str.encode('utf-8'))
-                    elif item.filename == 'Metadata/slice_info.config':
-                        zout.writestr(item, modified_slice_info)
-                    elif item.filename == 'Metadata/model_settings.config':
-                        zout.writestr(item, modified_model_settings)
+            # Normalise all filament_* arrays to TARGET_FILAMENTS length
+            for key, val in combined.items():
+                if key.startswith('filament_') and isinstance(val, list) and 0 < len(val) != TARGET_FILAMENTS:
+                    if len(val) < TARGET_FILAMENTS:
+                        val.extend([val[-1]] * (TARGET_FILAMENTS - len(val)))
                     else:
-                        # Copy all other files as-is (including 3D models)
-                        content = zin.read(item.filename)
-                        zout.writestr(item, content)
+                        combined[key] = val[:TARGET_FILAMENTS]
 
-        shutil.move(temp_zip, output_path)
+            combined_bytes = json.dumps(combined, indent=4, ensure_ascii=False).encode('utf-8')
 
-        return jsonify({'download_url': f'/download/{output_filename}'})
+            # ---- Copy all members, sanitising paths (Zip Slip defence) ----
+            for item in zin.infolist():
+                safe_name = posixpath.normpath(item.filename).lstrip('/')
+                if safe_name.startswith('..'):
+                    logger.warning("Skipping suspicious ZIP entry: %s", item.filename)
+                    continue
+
+                if item.filename == 'Metadata/project_settings.config':
+                    zout.writestr(item, combined_bytes)
+                elif item.filename == 'Metadata/slice_info.config':
+                    zout.writestr(item, modified_slice_info)
+                elif item.filename == 'Metadata/model_settings.config':
+                    zout.writestr(item, modified_model_settings)
+                else:
+                    zout.writestr(item, zin.read(item.filename))
+
+        return jsonify({'download_url': f'/download/{session_id}_U1_Ready.3mf'})
 
     except Exception as e:
-        if os.path.exists(temp_zip):
-            os.remove(temp_zip)
-        return jsonify({'error': str(e)}), 500
+        logger.error("Conversion error [%s]: %s", session_id, e, exc_info=True)
+        if os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
+        return jsonify({'error': 'Conversion failed. Please check your file and try again.'}), 500
 
-@app.route('/download/<path:filename>')
-def download_file(filename):
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    # Give user a clean filename regardless of internal session ID
+
+@app.route('/download/<filename>')
+def download_file(filename: str):
+    # Strict allowlist: only session-prefixed output files
+    if not re.fullmatch(r'[0-9a-f]{32}_U1_Ready\.3mf', filename):
+        return jsonify({'error': 'Invalid filename'}), 400
+    filepath = _safe_path(filename)
+    if filepath is None or not os.path.exists(filepath):
+        return jsonify({'error': 'File not found'}), 404
     return send_file(filepath, as_attachment=True, download_name='Snapmaker_U1_Ready.3mf')
 
+
 if __name__ == '__main__':
-    app.run(debug=True, port=8080)
+    debug = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
+    app.run(debug=debug, port=8080)
