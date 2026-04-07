@@ -35,7 +35,7 @@ A web-based tool to convert Bambu Lab .3mf projects to Snapmaker U1 format, pres
 
 ```bash
 # Clone the repository
-git clone https://github.com/josua/bl2u1.git
+git clone https://github.com/josuanbn/bl2u1.git
 cd bl2u1
 
 # Install dependencies
