@@ -34,7 +34,7 @@
                 <ul class="text-slate-300 text-sm space-y-2">
                     <li><i class="fa-solid fa-check text-green-400 mr-2"></i>Converts Bambu Lab .3mf projects to Snapmaker U1</li>
                     <li><i class="fa-solid fa-check text-green-400 mr-2"></i>Applies the 0.20mm Standard print profile</li>
-                    <li><i class="fa-solid fa-check text-green-400 mr-2"></i>Remaps colors and filament types to U1 compatible profiles</li>
+                    <li><i class="fa-solid fa-check text-green-400 mr-2"></i>Remaps colors and filament types and Process Setting to U1 compatible profiles</li>
                     <li><i class="fa-solid fa-check text-green-400 mr-2"></i>Enables Tree Supports (auto) if the original model has supports enabled</li>
                 </ul>
                 <p class="text-slate-500 text-xs mt-4">Note: The converted file should be opened in Snapmaker Orca for final slicing.</p>
@@ -69,9 +69,9 @@
         <div id="step2" class="hidden mt-6">
             <h3 class="text-xl font-semibold mb-4 border-b border-slate-600 pb-2">U1 Filament Configuration</h3>
 
-            <!-- Warning for >4 filaments -->
-            <div id="selection-warning" class="hidden mb-4 bg-amber-900/50 border border-amber-600 text-amber-200 px-4 py-3 rounded-lg text-sm">
-                <i class="fa-solid fa-circle-exclamation mr-2 text-amber-400"></i>
+            <!-- Info for >4 filaments (khong chan, chi thong bao) -->
+            <div id="selection-warning" class="hidden mb-4 bg-cyan-900/40 border border-cyan-700 text-cyan-200 px-4 py-3 rounded-lg text-sm">
+                <i class="fa-solid fa-circle-info mr-2 text-cyan-400"></i>
                 <span id="selection-warning-text"></span>
             </div>
 
@@ -121,10 +121,9 @@
 
     <script>
         const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200 MB
-        const MAX_FILAMENTS = 4;
+        const U1_SLOTS = 4;   // so dau phun U1 - chi de hien thi thong tin
 
         let currentSessionId = '';
-        let needsSelection   = false;
         let isConverting     = false;
 
         const dropZone     = document.getElementById('drop-zone');
@@ -169,7 +168,6 @@
             } else {
                 convertIcon.className   = 'fa-solid fa-bolt';
                 convertLabel.textContent = 'Convert and Download';
-                if (needsSelection) updateSelectionState();
             }
         }
 
@@ -281,45 +279,24 @@
         }
 
         // ----------------------------------------------------------------
-        // Selection logic (only active when >4 filaments)
-        // ----------------------------------------------------------------
-        function updateSelectionState() {
-            if (!needsSelection) return;
-            const checked = document.querySelectorAll('.filament-check:checked').length;
-            const counter = document.getElementById('selection-counter');
-            counter.textContent = `${checked}/${MAX_FILAMENTS} selected`;
-
-            const tooMany = checked > MAX_FILAMENTS;
-            counter.classList.toggle('text-cyan-400', !tooMany);
-            counter.classList.toggle('text-red-400',  tooMany);
-            btnConvert.disabled = checked === 0 || tooMany || isConverting;
-        }
-
-        // ----------------------------------------------------------------
         // Render filament rows
         // ----------------------------------------------------------------
         function renderFilaments(filaments) {
             const container = document.getElementById('filament-list');
             container.innerHTML = '';
-            needsSelection = filaments.length > MAX_FILAMENTS;
-
             const warning = document.getElementById('selection-warning');
-            const counter = document.getElementById('selection-counter');
-            const hint    = document.getElementById('filament-hint');
 
-            if (needsSelection) {
+            if (filaments.length > U1_SLOTS) {
                 document.getElementById('selection-warning-text').textContent =
-                    `This file has ${filaments.length} filaments. Select up to ${MAX_FILAMENTS} for the U1.`;
+                    `This file has ${filaments.length} filaments. All of them will be kept - ` +
+                    `you will map them to the U1's ${U1_SLOTS} slots when printing (filament mapping).`;
                 warning.classList.remove('hidden');
-                counter.classList.remove('hidden');
-                hint.textContent = 'Check the filaments you want to keep, then configure their U1 mapping.';
-                btnConvert.disabled = true;
             } else {
                 warning.classList.add('hidden');
-                counter.classList.add('hidden');
-                hint.textContent = 'Review and adjust filament settings for the U1, then convert.';
-                btnConvert.disabled = false;
             }
+            document.getElementById('filament-hint').textContent =
+                'Review and adjust filament colors/types for the U1, then convert.';
+            btnConvert.disabled = false;
 
             filaments.forEach((fil, index) => {
                 const mappedType = mapFilamentType(fil.type);
@@ -327,15 +304,10 @@
                     `<option value="${ft.type}"${ft.type === mappedType ? ' selected' : ''}>${ft.type}</option>`
                 ).join('');
 
-                const checkboxHtml = needsSelection
-                    ? `<input type="checkbox" class="filament-check w-5 h-5 rounded border-slate-500 bg-slate-600 text-cyan-500 focus:ring-cyan-500 cursor-pointer flex-shrink-0" data-fil-id="${fil.id}" aria-label="Select filament ${index + 1}">`
-                    : '';
-
                 const row = document.createElement('div');
                 row.className = 'bg-slate-700 p-4 rounded flex items-center justify-between gap-3';
                 row.dataset.id = fil.id;
                 row.innerHTML = `
-                    ${checkboxHtml}
                     <div class="flex items-center gap-3 min-w-0 flex-1">
                         <div class="w-8 h-8 rounded-full border border-gray-500 shadow flex-shrink-0"
                              style="background-color: ${fil.color}"></div>
@@ -358,13 +330,6 @@
                     </div>`;
                 container.appendChild(row);
             });
-
-            if (needsSelection) {
-                container.querySelectorAll('.filament-check').forEach(cb =>
-                    cb.addEventListener('change', updateSelectionState)
-                );
-                updateSelectionState();
-            }
         }
 
         // ----------------------------------------------------------------
@@ -380,7 +345,6 @@
             hideError();
             setConverting(false);
             currentSessionId = '';
-            needsSelection   = false;
             btnConvert.disabled = false;
         });
 
@@ -400,24 +364,15 @@
             if (isConverting) return;
             hideError();
 
+            // Gui TOAN BO filament (giu nguyen so mau goc)
             const colors = {};
-            if (needsSelection) {
-                document.querySelectorAll('.filament-check:checked').forEach(cb => {
-                    const id = cb.dataset.filId;
-                    colors[id] = {
-                        color: document.getElementById(`col-${id}`).value,
-                        type:  document.getElementById(`typ-${id}`).value,
-                    };
-                });
-            } else {
-                document.querySelectorAll('#filament-list > div').forEach(div => {
-                    const id = div.dataset.id;
-                    colors[id] = {
-                        color: document.getElementById(`col-${id}`).value,
-                        type:  document.getElementById(`typ-${id}`).value,
-                    };
-                });
-            }
+            document.querySelectorAll('#filament-list > div').forEach(div => {
+                const id = div.dataset.id;
+                colors[id] = {
+                    color: document.getElementById(`col-${id}`).value,
+                    type:  document.getElementById(`typ-${id}`).value,
+                };
+            });
 
             if (Object.keys(colors).length === 0) {
                 showError('Please select at least one filament.');

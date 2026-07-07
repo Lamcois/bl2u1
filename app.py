@@ -1,4 +1,5 @@
 import os
+import sys
 import zipfile
 import re
 import json
@@ -6,22 +7,41 @@ import uuid
 import time
 import logging
 import posixpath
+import tempfile
+import webbrowser
 import xml.etree.ElementTree as ET
 from threading import Timer
 from werkzeug.utils import secure_filename as _werkzeug_secure
 from flask import Flask, render_template, request, send_file, jsonify
 from werkzeug.exceptions import RequestEntityTooLarge
+from u1_process_mapping import merge_process_settings, build_process_settings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+
+def resource_path(rel: str) -> str:
+    """
+    Trả về đường dẫn tuyệt đối tới file dữ liệu đi kèm.
+    - Khi chạy dạng .py  : cạnh file app.py
+    - Khi đóng gói PyInstaller onefile: trong thư mục tạm sys._MEIPASS
+    """
+    base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, rel)
+
+
+app = Flask(
+    __name__,
+    template_folder=resource_path('templates'),
+    static_folder=resource_path('static'),
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-UPLOAD_FOLDER            = 'uploads'
-FILAMENT_PROFILES_FILE   = 'filament_types.3mf'
+# Uploads phải nằm ở nơi GHI ĐƯỢC (exe có thể đặt trong thư mục chỉ đọc)
+UPLOAD_FOLDER            = os.path.join(tempfile.gettempdir(), 'bl2u1_uploads')
+FILAMENT_PROFILES_FILE   = resource_path('filament_types.3mf')
 TARGET_FILAMENTS         = 4     # U1 hardware supports 4 extruders
 MAX_FILE_AGE_HOURS       = 8
 DEFAULT_FILAMENT_PROFILE = 'Snapmaker PLA SnapSpeed @U1'
@@ -236,7 +256,7 @@ def convert():
         if ftype not in _VALID_TYPES:
             return jsonify({'error': f'Invalid filament type: {ftype}'}), 400
 
-    # Pick template based on support settings in the original file
+    # --- Đọc file gốc để lấy orig_settings và kiểm tra enable_support ---
     try:
         with zipfile.ZipFile(input_path, 'r') as z:
             orig_settings = json.loads(z.read('Metadata/project_settings.config').decode('utf-8'))
@@ -244,20 +264,34 @@ def convert():
         logger.error("Could not read project settings [%s]: %s", session_id, e)
         return jsonify({'error': 'Could not read project settings from the uploaded file'}), 500
 
-    diff        = orig_settings.get('different_settings_to_system', [])
-    has_support = any(isinstance(s, str) and 'enable_support' in s for s in diff)
-    template    = 'u1_template_supports.3mf' if has_support else 'u1_template.3mf'
+    # Xác định hỗ trợ dựa trên key enable_support (có trong Bambu)
+    has_support = str(orig_settings.get('enable_support', '0')) == '1'
+    template    = resource_path('u1_template_supports.3mf' if has_support else 'u1_template.3mf')
 
     try:
         with zipfile.ZipFile(template, 'r') as z:
+            tmpl_names  = set(z.namelist())
             u1_settings = json.loads(z.read('Metadata/project_settings.config').decode('utf-8'))
+            # Snapmaker Orca reads the active Process from process_settings_1.config,
+            # NOT from project_settings.config. Bambu files don't have this file,
+            # so we must take it from the U1 template and inject the Bambu values.
+            u1_process = None
+            if 'Metadata/process_settings_1.config' in tmpl_names:
+                u1_process = json.loads(
+                    z.read('Metadata/process_settings_1.config').decode('utf-8'))
+            # Extra U1-only members that the Bambu input lacks but Orca expects
+            # (machine settings, process settings). Copy them verbatim.
+            u1_extra_members = {}
+            for nm in tmpl_names:
+                if nm.startswith('Metadata/machine_settings') or \
+                   nm.startswith('Metadata/process_settings'):
+                    u1_extra_members[nm] = z.read(nm)
     except Exception as e:
         logger.error("Could not read template %s: %s", template, e)
         return jsonify({'error': 'Server template missing -- please contact the administrator'}), 500
 
     # ------------------------------------------------------------------
-    # Build the modified archive: read input_path -> write output_path
-    # (no intermediate shutil.copy needed)
+    # Build the modified archive
     # ------------------------------------------------------------------
     try:
         with zipfile.ZipFile(input_path, 'r') as zin, \
@@ -272,69 +306,52 @@ def convert():
             )
             root = ET.fromstring(xml_str)
 
+            # Thay đổi printer_settings_id của tất cả plate
+            for plate in root.findall('.//plate'):
+                if 'printer_settings_id' in plate.attrib:
+                    plate.set('printer_settings_id', 'Snapmaker U1')
+
             filaments_parent = root.find('.//plate') or root
 
-            # Use direct children only so Element.remove() targets the right parent
-            existing_nodes = filaments_parent.findall('filament')
-
-            id_mapping: dict[str, str] = {}
-            new_id_counter = 1
-
-            for node in list(existing_nodes):
-                old_id = node.get('id')
-                if old_id not in user_colors:
-                    filaments_parent.remove(node)
-                else:
-                    conf = user_colors[old_id]
-                    id_mapping[old_id] = str(new_id_counter)
-                    node.set('id',    str(new_id_counter))
+            # GIỮ NGUYÊN toàn bộ filament gốc (U1/Snapmaker Orca hỗ trợ
+            # filament mapping lúc in nên project được phép >4 màu).
+            # Không xóa, không pad, không đổi id -> dữ liệu sơn màu trên
+            # mesh (mmu_segmentation) vẫn khớp tuyệt đối.
+            # Chỉ áp thay đổi màu/loại cho filament người dùng chỉnh trong UI.
+            for node in filaments_parent.findall('filament'):
+                fid = node.get('id')
+                if fid in user_colors:
+                    conf = user_colors[fid]
                     node.set('color', conf['color'])
                     node.set('type',  conf['type'])
-                    new_id_counter += 1
-
-            # Pad to TARGET_FILAMENTS with dummy white-PLA entries
-            while new_id_counter <= TARGET_FILAMENTS:
-                dummy = ET.SubElement(filaments_parent, 'filament')
-                dummy.set('id',     str(new_id_counter))
-                dummy.set('type',   'PLA')
-                dummy.set('color',  '#FFFFFFFF')
-                dummy.set('used_m', '0')
-                dummy.set('used_g', '0')
-                new_id_counter += 1
 
             modified_slice_info = ET.tostring(root, encoding='utf-8', xml_declaration=True)
 
             # ---- model_settings.config ------------------------------------
-            model_root = ET.fromstring(
-                zin.read('Metadata/model_settings.config').decode('utf-8')
-            )
-            for meta in model_root.findall('.//metadata[@key="extruder"]'):
-                old_ext = meta.get('value')
-                if old_ext in id_mapping:
-                    meta.set('value', id_mapping[old_ext])
-
-            modified_model_settings = ET.tostring(
-                model_root, encoding='utf-8', xml_declaration=True
-            )
+            # Id filament giữ nguyên nên KHÔNG cần remap extruder nữa.
+            modified_model_settings = zin.read('Metadata/model_settings.config')
 
             # ---- project_settings.config ----------------------------------
             combined   = u1_settings.copy()
             new_colors: list[str] = []
             new_types:  list[str] = []
 
+            # Giữ đủ MỌI filament gốc theo đúng thứ tự id.
+            # Filament nào người dùng chỉnh thì lấy màu/loại mới,
+            # còn lại giữ nguyên màu/loại ban đầu của file Bambu.
             for fil in original_filaments:
                 fid = fil['id']
-                if fid not in user_colors:
-                    continue
-                color = user_colors[fid]['color']
-                ftype = user_colors[fid]['type']
+                if fid in user_colors:
+                    color = user_colors[fid]['color']
+                    ftype = user_colors[fid]['type']
+                else:
+                    color = fil['color']
+                    ftype = fil['type']
                 color = (color + 'FF') if len(color) == 7 else color  # ensure RGBA
                 new_colors.append(color.upper())
                 new_types.append(ftype)
 
-            while len(new_colors) < TARGET_FILAMENTS:
-                new_colors.append('#FFFFFFFF')
-                new_types.append('PLA')
+            n_filaments = max(len(new_colors), 1)
 
             combined['filament_colour'] = new_colors
             combined['filament_type']   = new_types
@@ -345,17 +362,40 @@ def convert():
                 profile_map.get(t, default_profile) for t in new_types
             ]
 
-            # Normalise all filament_* arrays to TARGET_FILAMENTS length
+            # Normalise all filament_* arrays theo số filament thực tế
+            # (template U1 thường chỉ có 4 phần tử -> nhân bản phần tử cuối
+            #  khi project nhiều màu hơn, cắt bớt khi ít màu hơn)
             for key, val in combined.items():
-                if key.startswith('filament_') and isinstance(val, list) and 0 < len(val) != TARGET_FILAMENTS:
-                    if len(val) < TARGET_FILAMENTS:
-                        val.extend([val[-1]] * (TARGET_FILAMENTS - len(val)))
+                if key.startswith('filament_') and isinstance(val, list) and 0 < len(val) != n_filaments:
+                    if len(val) < n_filaments:
+                        val.extend([val[-1]] * (n_filaments - len(val)))
                     else:
-                        combined[key] = val[:TARGET_FILAMENTS]
+                        combined[key] = val[:n_filaments]
+
+            # ---- Merge Process settings from the Bambu file --------------
+            combined = merge_process_settings(combined, orig_settings, logger=logger)
+
+            # Đặt tên custom để Orca không ghi đè khi đổi máy
+            custom_name = f"Converted_{session_id[:8]}"
+            combined['print_settings_id'] = custom_name
 
             combined_bytes = json.dumps(combined, indent=4, ensure_ascii=False).encode('utf-8')
 
+            # ---- Process settings_1.config --------------------------------
+            if u1_process is not None:
+                u1_process = merge_process_settings(u1_process, orig_settings, logger=logger)
+            else:
+                u1_process = build_process_settings(combined)
+                logger.info("Template has no process_settings_1.config -> built one "
+                            "with %d keys", len(u1_process))
+            # Ghi đè tên để thành custom
+            u1_process['name'] = custom_name
+            process_bytes = json.dumps(
+                u1_process, indent=4, ensure_ascii=False).encode('utf-8')
+            u1_extra_members['Metadata/process_settings_1.config'] = process_bytes
+
             # ---- Copy all members, sanitising paths (Zip Slip defence) ----
+            written = set()
             for item in zin.infolist():
                 safe_name = posixpath.normpath(item.filename).lstrip('/')
                 if safe_name.startswith('..'):
@@ -368,8 +408,18 @@ def convert():
                     zout.writestr(item, modified_slice_info)
                 elif item.filename == 'Metadata/model_settings.config':
                     zout.writestr(item, modified_model_settings)
+                elif item.filename in u1_extra_members:
+                    # If the Bambu file somehow already has this name, prefer the
+                    # merged U1 version.
+                    zout.writestr(item, u1_extra_members[item.filename])
                 else:
                     zout.writestr(item, zin.read(item.filename))
+                written.add(item.filename)
+
+            # ---- Add U1-only members that the Bambu input didn't contain -----
+            for nm, data in u1_extra_members.items():
+                if nm not in written:
+                    zout.writestr(nm, data)
 
         return jsonify({
             'download_url': f'/download/{session_id}_U1_Ready.3mf',
@@ -401,5 +451,15 @@ def download_file(filename: str):
 
 
 if __name__ == '__main__':
-    debug = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
-    app.run(debug=debug, port=8080)
+    frozen = getattr(sys, 'frozen', False)          # True khi chạy dạng .exe PyInstaller
+
+    url = 'http://127.0.0.1:8080'
+    print('\n  BambuLab -> Snapmaker U1 Converter')
+    print(f'  Đang chạy tại: {url}')
+    print('  Đóng cửa sổ này hoặc bấm Ctrl+C để tắt.\n')
+
+    # Tự mở browser sau 1 giây (chỉ khi chạy dạng exe)
+    if frozen:
+        Timer(1.0, lambda: webbrowser.open(url)).start()
+
+    app.run(debug=False, port=8080)
