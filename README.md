@@ -1,110 +1,17 @@
-# Bambu Lab to Snapmaker U1 Converter
+Bambu Studio → Snapmaker U1 3MF Converter — keeps color painting, supports and settings
+Got a library of painted, carefully-tuned models in Bambu Studio (A1/P1/X1) and want to print them on your Snapmaker U1? No need to redo everything from scratch 👇
+Introducing Bambu2U1 Converter — my remix built on top of the original bl2u1 project by josuanbn (https://github.com/josuanbn/bl2u1). Huge thanks to the original author — full credit for the idea and foundation goes to them 🙏
+What it does:
+✅ Converts .3mf projects from Bambu Studio to Snapmaker U1 format, opens directly in Snapmaker Orca
+✅ Keeps your color painting intact — no repainting needed
+✅ Keeps supports: auto, manual, painted support areas, enforcer/blocker volumes
+✅ Handles projects with more than 4 colors (6, 8+…) — all original filaments are preserved; you map them to the U1's 4 slots at print time (filament mapping), and you can change each filament's color/material right in the tool
+What my remix adds over the original:
+🔧 Process settings mapping from Bambu to U1: infill patterns (including newer ones like Archimedean Chords and 2D Lattice), walls, ironing, fuzzy skin, scarf seam, bridges, supports — enum mappings verified directly against the BambuStudio and Snapmaker OrcaSlicer source code
+🔧 Hardware parameters (acceleration, bed temps, machine gcode…) stay at proper U1 defaults — nothing gets wrongly carried over from the A1
+🔧 4-color limit removed — the full original filament list is preserved
+🔧 Packaged as a single portable .exe — no Python install needed, runs on any Windows machine, double-click and it opens your browser at http://127.0.0.1:8080
+How to use: open the app → drop your .3mf → tweak colors/materials if you want → Convert → download and open in Snapmaker Orca (File → Open Project, load settings) → slice and print.
+⚠️ Note: filament settings (temps, flow) use standard Snapmaker profiles since the two hotends differ — fine-tune for your own filament. Always check the Preview after converting.
 
-A web-based tool to convert Bambu Lab .3mf projects to Snapmaker U1 format, preserving multi-color painting and filament assignments.
-
-**Live version:** [https://bl2u1.nbn.cat](https://bl2u1.nbn.cat)
-
-## Features
-
-- Converts Bambu Lab/Bambu Studio .3mf files to Snapmaker U1 compatible format
-- Preserves color painting and multi-color assignments
-- Applies the 0.20mm Standard print profile for U1
-- Remaps filament types to U1 compatible profiles
-- Automatically enables Tree Supports (auto) if the original model has supports enabled
-- Supports files with more than 4 filaments (select which ones to keep for the U1)
-- Real-time upload progress bar
-- Downloaded file keeps the original name (e.g. `my_model-U1.3mf`)
-- Simple drag & drop interface
-- No installation required (web-based)
-
-## How It Works
-
-1. Upload your Bambu Lab .3mf file
-2. Review and adjust filament colors/types if needed
-3. Click "Convert and Download"
-4. Open the converted file in **Snapmaker Orca** for final slicing
-
-## Self-Hosting
-
-### Requirements
-
-- Python 3.8+
-- Flask
-
-### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/josuanbn/bl2u1.git
-cd bl2u1
-
-# Install dependencies
-pip install flask
-
-# Run the application
-python app.py
-```
-
-The application will be available at `http://localhost:8080`
-
-### Project Structure
-
-```
-bl2u1/
-├── app.py                    # Flask backend
-├── templates/
-│   └── index.html            # Frontend interface
-├── uploads/                  # Temporary file storage (auto-cleaned)
-├── u1_template.3mf           # U1 template without supports
-├── u1_template_supports.3mf  # U1 template with tree supports
-└── filament_types.3mf        # Available filament profiles
-```
-
-### Template Files
-
-The converter requires template .3mf files configured for Snapmaker U1:
-
-- `u1_template.3mf` - Base template with 0.20mm Standard profile, supports disabled
-- `u1_template_supports.3mf` - Same as above but with Tree Supports (auto) enabled
-- `filament_types.3mf` - Reference file containing available U1 filament profiles
-
-## Technical Details
-
-The converter performs the following transformations:
-
-1. **Printer Profile**: Changes printer settings from Bambu Lab to Snapmaker U1
-2. **Filament Mapping**: Remaps filament types to U1 compatible profiles
-3. **Color Preservation**: Maintains all color painting data from the original file
-4. **Support Detection**: Checks `different_settings_to_system` for `enable_support` and uses the appropriate template
-5. **Filament Padding**: Ensures 4 filaments are always configured (fills empty slots with white PLA)
-
-### File Cleanup
-
-Uploaded files are automatically deleted after 8 hours to save disk space.
-
-## Limitations
-
-- Maximum 4 filaments/colors per print (U1 hardware limitation), but files with more filaments are supported via selection
-- The converted file must be sliced in Snapmaker Orca before printing
-- Some advanced Bambu-specific features may not transfer
-
-## Contributing
-
-Contributions are welcome! Feel free to:
-
-- Report bugs
-- Suggest features
-- Submit pull requests
-
-## License
-
-MIT License - feel free to use, modify, and distribute.
-
-## Acknowledgments
-
-- Snapmaker community for feedback and testing
-- Bambu Lab for the excellent .3mf format documentation
-
-## Support
-
-If you find this tool useful, consider [buying me a coffee](https://buymeacoffee.com/josuanbn)!
+Free tool — found a bug? Drop a comment and I'll fix it. Happy printing! 🎉
