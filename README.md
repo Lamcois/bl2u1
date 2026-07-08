@@ -19,3 +19,17 @@ How to use: open the app → drop your .3mf → tweak colors/materials if you wa
 
 
 Free tool — found a bug? Drop a comment and I'll fix it. Happy printing! 🎉
+
+Requirements
+Python 3.8+
+Flask
+Installation
+# Clone the repository
+git clone https://github.com/josuanbn/bl2u1.git
+cd bl2u1
+
+# Install dependencies
+pip install flask
+
+# Run the application
+python app.py
